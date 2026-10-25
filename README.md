@@ -74,7 +74,8 @@ A small binary on the user's device presents a normal MTProxy on
 `127.0.0.1`. Telegram connects to it natively (one tap, `tg://proxy`); the relay
 re-dials the upstream MTProxy while emitting the Chrome ClientHello via uTLS. The
 app's own (flagged) fingerprint never reaches the censor — only the relay's
-Chrome one does. Works today, no rebuild.
+Chrome one does. No rebuild of the app, and no change to the upstream proxy.
+(Design; the relay binary is not yet published in this repo — see Status.)
 
 **2. Native client patch (durable) — a Telegram fork.**
 Patch the FakeTLS ClientHello generator directly in the client so the app itself
@@ -119,38 +120,84 @@ a silver bullet.
 
 ## Verification
 
-Fingerprint claims must be measured, not asserted. This project ships its own
-test rig:
+Fingerprint claims must be measured, not asserted. What is in **this** repo is a
+reproducible measurement of the *problem*: the ClientHello a current native
+Telegram client actually emits, and how far it already is from Chrome.
+
+`verification/` contains:
+
+- **`baseline_tdlib_hello.hex`** — the real 1724-byte FakeTLS ClientHello a
+  native TDLib build (master, 2026-07) puts on the wire, captured off a local
+  socket.
+- **`tlsdump_harness.cpp`** — the capture harness that produced it (drives
+  `td::mtproto::TlsInit` against a loopback socket; requires a TDLib checkout —
+  see Build & reproduce).
+- **`compute_ja4.py`** — a dependency-free JA3/JA4 calculator so anyone can
+  re-derive the fingerprints below straight from the committed capture.
+
+**Measured result** (reproducible: `python3 verification/compute_ja4.py
+verification/baseline_tdlib_hello.hex`):
+
+```
+Native TDLib FakeTLS   t13d1516h2_8daaf6152771_d8a2da3f94cd   (captured, this repo)
+Chrome (target)        t13d1516h2_8daaf6152771_b0da82dd1658   (reference profile)
+```
+
+| JA4 segment | Native FakeTLS | vs Chrome |
+| --- | --- | --- |
+| `ja4_a` — version / counts / ALPN | `t13d1516h2` | **matches** |
+| `ja4_b` — cipher-suite hash | `8daaf6152771` | **matches** (identical cipher list + order) |
+| `ja4_c` — extension + sig-alg hash | `d8a2da3f94cd` | **differs** |
+
+So the native hello is **already 2/3 identical to Chrome**. The residual tell is
+`ja4_c`: the extension set still carries a non-Chrome marker (the `0x44cd`
+block). That is the narrow surface the cloak has to align, and it is the same
+hello DSL across all three clients.
+
+> The Chrome JA4 above is a published reference profile used as the target, not a
+> value measured in this repo. Measuring an *outgoing cloaked* handshake end to
+> end needs a live reflector (see `fpcheck`); this repo does not ship a captured
+> cloaked hello, so no such hash is claimed here.
+
+Companion tooling (separate repos):
 
 - **[fpcheck](https://github.com/North-web-dev/fpcheck)** — self-hosted
-  JA3/JA4/JA4H + HTTP/2 fingerprint tester. Point a client at it, read its exact
-  JA4.
-- **[mtaudit](https://github.com/North-web-dev/mtaudit)** — server-side
+  JA3/JA4/JA4H + HTTP/2 fingerprint reflector. Point a client at it, read its
+  exact JA4.
+- **[mtaudit](https://github.com/North-web-dev/mtaudit)** — client-side
   detectability auditor (JARM, active-probe, ASN) for the proxy leg.
-
-**Measured result.** A uTLS `HelloChrome` ClientHello, captured by fpcheck:
-
-```
-Real Chrome        t13d1516h2_8daaf6152771_b0da82dd1658
-tgcloak (uTLS)     t13d1516h2_8daaf6152771_………………………   ← JA4 a + b identical
-curl (baseline)    t13i3112h2_e8f1e7e78f70_………………………   ← unrelated fingerprint
-```
-
-The version + cipher-suite + ALPN core (`t13d1516h2`) and the cipher hash
-(`8daaf6152771`) match Chrome byte-for-byte. Pinning the exact current Chrome
-template closes the remaining extension-hash segment.
 
 ---
 
-## Status
+## Build & reproduce
+
+**Re-derive the fingerprints (no toolchain):**
+
+```sh
+python3 verification/compute_ja4.py verification/baseline_tdlib_hello.hex
+# -> t13d1516h2_8daaf6152771_d8a2da3f94cd
+```
+
+**Re-capture the native hello (needs TDLib):** `tlsdump_harness.cpp` links
+against TDLib's `tdmtproto` and uses its private `td/mtproto/TlsInit.h`, so it
+builds inside a TDLib checkout, not standalone. Point a listener at
+`127.0.0.1:7000`, run the harness, and dump the bytes it writes. See
+`verification/README.md`.
+
+---
+
+## Status — what is in this repo
 
 - **Protocol / principle** — specified here.
-- **Reference relay (`tgrelay`)** — implemented: obfuscated2 codec, uTLS
-  browser-hello dial, bidirectional bridge. Chrome handshake verified live.
-- **Native client patches** — patch points located in all three clients; the
-  Chrome-exact hello is finalized on the TDLib testbed (buildable + fpcheck-
-  verifiable) before porting to the desktop/Android forks.
-- **Auditing** — `fpcheck` + `mtaudit` operational.
+- **Verification rig** — present and reproducible: captured native FakeTLS
+  hello + JA4 calculator; confirms the 2/3 match and isolates the `ja4_c` tell.
+- **Reference relay (`tgrelay`)** — *design, not yet published here.* The intended
+  shape (obfuscated2 codec + uTLS browser-hello dial + bidirectional bridge) is
+  described above under "Two deployment modes"; the implementation is not part of
+  this repository yet.
+- **Native client patches** — patch points located in all three clients (table
+  above); the Chrome-exact hello is not yet committed here.
+- **Auditing** — `fpcheck` and `mtaudit` live in their own repos.
 
 ---
 
@@ -160,6 +207,19 @@ For **educational and anti-censorship research**. Provided **as is, without
 warranty of any kind**. Automating or modifying a third-party client may violate
 that service's Terms of Service; you are solely responsible for lawful use in
 your jurisdiction. The authors accept no liability.
+
+## Support
+
+If this work is useful to you, a ⭐ on the repo helps. Donations keep the research
+and tooling maintained:
+
+| Coin | Address |
+|---|---|
+| **BTC** | `bc1q0sfghv7yfl594gjurhyhlhdgm0dtwh4dkjha36` |
+| **ETH / USDT-ERC20 / BNB-BEP20** | `0xB827b5a8B6c5111946c5D872933b2C23484E87dE` |
+| **SOL** | `3ch5aHrPp3CierhiNXmqmtFH2dMHh6Gfv7a97KtLMMCh` |
+| **USDT-TRC20 / TRX** | `TUAyz7TjgJdFVD2oFHWUUTNrzzAnBRgySG` |
+| **TON** | `UQAJmYVuR3hh02etjaPKJF-h6jcpdSnq9ZIFvI64NEskS6tx` |
 
 ## License
 

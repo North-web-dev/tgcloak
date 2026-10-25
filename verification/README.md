@@ -26,3 +26,17 @@ narrow: align the extension set (drop/adjust non-Chrome extensions such as the
 tdesktop / DrKLO / TDLib (identical hello DSL).
 
 `baseline_tdlib_hello.hex` — the captured 1724-byte ClientHello for reference.
+
+## Reproduce the fingerprints
+
+No TDLib needed to re-derive the JA3/JA4 from the committed capture:
+
+```sh
+python3 compute_ja4.py baseline_tdlib_hello.hex
+# JA3:  ec05efb6022552676a685e4b52f36702
+# JA4:  t13d1516h2_8daaf6152771_d8a2da3f94cd
+```
+
+`compute_ja4.py` is stdlib-only and ignores GREASE per the FoxIO JA4 spec
+(sorted ciphers for `ja4_b`; sorted extensions minus SNI/ALPN, plus the
+signature-algorithm list, for `ja4_c`).
